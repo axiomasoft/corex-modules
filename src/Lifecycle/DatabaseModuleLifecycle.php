@@ -7,6 +7,7 @@ namespace CoreX\Modules\Lifecycle;
 use Closure;
 use CoreX\Audit\CurrentActor;
 use CoreX\Contracts\FeatureFlags;
+use CoreX\Modules\Contracts\ModuleActivationGate;
 use CoreX\Modules\Contracts\ModuleLifecycle;
 use CoreX\Modules\Contracts\ModuleRegistry;
 use CoreX\Modules\Contracts\RecordsRegistrar;
@@ -30,12 +31,13 @@ use CoreX\Modules\ModulesServiceProvider;
 use CoreX\Modules\ModuleStatus;
 use CoreX\Tenancy\Contracts\TenantContextResolver;
 use CoreX\Tenancy\TenantContext;
+use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Contracts\Container\Container;
-use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Database\Connection;
 use Illuminate\Database\Events\MigrationEnded;
 use Illuminate\Database\Events\MigrationStarted;
 use Illuminate\Database\Migrations\Migrator;
+use Illuminate\Events\Dispatcher;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
@@ -134,6 +136,12 @@ final class DatabaseModuleLifecycle implements ModuleLifecycle
                 throw InvalidStateTransitionException::purgedIsTerminal($module);
             }
 
+            $decision = $this->container->make(ModuleActivationGate::class)->check($tenant, $module, $edition);
+
+            if (! $decision->allowed) {
+                throw new AuthorizationException($decision->reason);
+            }
+
             foreach ($compiled->requires as $dep) {
                 if ($dep['type'] === 'module') {
                     $this->ensureDependencyEnabled($module, $dep['target'], $cascade);
@@ -162,35 +170,36 @@ final class DatabaseModuleLifecycle implements ModuleLifecycle
 
             $this->upsertModuleRow($module, $current, ModuleState::Enabled, $edition, $migration['ran']);
 
+            $this->defineManifestFeatureFlags($module);
+
             $this->log($module, 'enable', $fromState, ModuleState::Enabled->value, 'success', [
                 'migrations_run' => $migration['ran'],
             ]);
 
             $this->db()->afterCommit(function () use ($module, $edition, $migration): void {
                 event(new ModuleEnabled($module, $edition, $migration['ran']));
-                $this->defineManifestFeatureFlags($module);
             });
         });
     }
 
     /**
      * `Manifest::$featureFlags` → `FeatureFlags::define()` — the manifest
-     * declaration never reached the runtime flag store before this. Runs
-     * AFTER commit, alongside the lifecycle event: `define()` is idempotent
-     * (made atomic via `sys_feature_flags` UNIQUE(key)) and a flag row
-     * belongs in the DB only once enable() has actually landed, not while
-     * the transaction could still roll back.
+     * definitions participate in the enable transaction and are visible before
+     * its after-commit notification. The bound store must use this connection.
+     * `define()` is register-once and preserves administrator overrides.
      *
      * @internal spec: P1.25, A68, P1.22
      */
     private function defineManifestFeatureFlags(string $module): void
     {
-        /** @var FeatureFlags $flags */
-        $flags = $this->container->make(FeatureFlags::class);
+        DB::usingConnection($this->connection ?? DB::getDefaultConnection(), function () use ($module): void {
+            /** @var FeatureFlags $flags */
+            $flags = $this->container->make(FeatureFlags::class);
 
-        foreach ($this->manifestFor($module)->featureFlags as $definition) {
-            $flags->define($definition);
-        }
+            foreach ($this->manifestFor($module)->featureFlags as $definition) {
+                $flags->define($definition);
+            }
+        });
     }
 
     public function disable(string $module, DisableReason $reason, bool $cascade = false): void
@@ -369,6 +378,7 @@ final class DatabaseModuleLifecycle implements ModuleLifecycle
 
     private function lock(string $module): void
     {
+        $this->db()->statement('select pg_advisory_xact_lock(hashtext(?))', ['corex:module-lifecycle-graph']);
         $this->db()->statement('select pg_advisory_xact_lock(hashtext(?))', [$module]);
     }
 
@@ -607,8 +617,8 @@ final class DatabaseModuleLifecycle implements ModuleLifecycle
      * attributes the new tables/columns/indexes to $module. Claims are written
      * in creation order (tables by pg_class.oid), so the bigserial `seq` on
      * `mod_records` encodes creation order and purge is FK-safe. The listeners
-     * are torn down in `finally` — module lifecycle transitions run in
-     * isolation, so nothing else listens on the per-migration events here.
+     * are removed by identity in `finally`, preserving application listeners,
+     * including listeners registered during a migration.
      *
      * @internal spec: D41
      */
@@ -620,20 +630,23 @@ final class DatabaseModuleLifecycle implements ModuleLifecycle
         /** @var array{tables: array<string, int>, columns: array<string, bool>, indexes: array<string, string>}|null $snapshot */
         $snapshot = null;
 
-        $events->listen(MigrationStarted::class, function (MigrationStarted $event) use (&$snapshot): void {
+        $started = function (MigrationStarted $event) use (&$snapshot): void {
             if ($event->method === 'up') {
                 $snapshot = $this->schemaObjects();
             }
-        });
+        };
 
-        $events->listen(MigrationEnded::class, function (MigrationEnded $event) use (&$snapshot, $module): void {
+        $ended = function (MigrationEnded $event) use (&$snapshot, $module): void {
             if ($event->method !== 'up' || $snapshot === null) {
                 return;
             }
 
             $this->claimSchemaDelta($module, $snapshot, $this->schemaObjects());
             $snapshot = null;
-        });
+        };
+
+        $events->listen(MigrationStarted::class, $started);
+        $events->listen(MigrationEnded::class, $ended);
 
         try {
             $run();
@@ -642,8 +655,15 @@ final class DatabaseModuleLifecycle implements ModuleLifecycle
         } catch (Throwable $error) {
             return $error;
         } finally {
-            $events->forget(MigrationStarted::class);
-            $events->forget(MigrationEnded::class);
+            foreach ([MigrationStarted::class => $started, MigrationEnded::class => $ended] as $event => $owned) {
+                $listeners = $events->getRawListeners()[$event] ?? [];
+                $events->forget($event);
+                foreach ($listeners as $listener) {
+                    if ($listener !== $owned) {
+                        $events->listen($event, $listener);
+                    }
+                }
+            }
         }
     }
 

@@ -363,6 +363,9 @@ final class RegistryCompiler
         $ids = [];
         $paths = [];
         $operations = [];
+        $operationsByModule = [];
+        $toolTuples = [];
+        $wireNames = [];
 
         foreach ($manifests as $manifest) {
             foreach ($manifest->extenders as $extender) {
@@ -390,10 +393,44 @@ final class RegistryCompiler
                     $ids[$id] = true;
                     $paths[$path] = true;
                     $operations[] = $api;
+                    $operationsByModule[$manifest->composerName][$id] = $api;
                 }
 
                 $result[] = $api;
             }
+        }
+
+        foreach ($result as $api) {
+            if ($api->mode !== 'tool') {
+                continue;
+            }
+
+            ApiToolValidator::validate($api);
+
+            if ($api->toolKind === 'exposed') {
+                $operation = $operationsByModule[$api->declaringModule][$api->operationRef] ?? null;
+
+                if (! $operation instanceof Api) {
+                    throw new CompilationException('Unresolved operation reference for tool: '.$api->toolCode);
+                }
+
+                ApiToolValidator::validateExposedOperationReference($api, $operation, $api->declaringModule);
+            }
+
+            $tuple = $api->declaringModule.':'.$api->toolCode.':'.$api->toolVersion;
+
+            if (isset($toolTuples[$tuple])) {
+                throw new CompilationException('Duplicate tool tuple: '.$tuple);
+            }
+
+            $wire = ApiToolValidator::wireName($api);
+
+            if (isset($wireNames[$wire])) {
+                throw new CompilationException('Duplicate tool wire name: '.$wire);
+            }
+
+            $toolTuples[$tuple] = true;
+            $wireNames[$wire] = true;
         }
 
         return $result;

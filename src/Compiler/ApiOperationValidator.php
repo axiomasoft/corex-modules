@@ -93,7 +93,7 @@ final class ApiOperationValidator
         }
     }
 
-    private static function assertJsonValue(mixed $value): void
+    public static function assertJsonValue(mixed $value): void
     {
         if (is_array($value)) {
             foreach ($value as $item) {

@@ -8,6 +8,7 @@ use CoreX\Contracts\SettingDefaultsProvider;
 use CoreX\CoreServiceProvider;
 use CoreX\Modules\Audit\AuditCapabilityWiring;
 use CoreX\Modules\Commands\CompileModulesCommand;
+use CoreX\Modules\Commands\WhyCommand;
 use CoreX\Modules\Contracts\EntityRegistry;
 use CoreX\Modules\Contracts\ModuleActivationGate;
 use CoreX\Modules\Contracts\ModuleLifecycle;
@@ -15,8 +16,10 @@ use CoreX\Modules\Contracts\ModuleRegistry;
 use CoreX\Modules\Contracts\ModuleRegistryCache;
 use CoreX\Modules\Contracts\ModuleStateReader;
 use CoreX\Modules\Contracts\RecordsRegistrar;
+use CoreX\Modules\Contracts\RegistryIntrospection;
 use CoreX\Modules\Discovery\ModuleDiscovery;
 use CoreX\Modules\Gate\AllowAllActivationGate;
+use CoreX\Modules\Internal\ReadRegistryIntrospection;
 use CoreX\Modules\Lifecycle\DatabaseModuleLifecycle;
 use CoreX\Modules\Lifecycle\DatabaseModuleStateReader;
 use CoreX\Modules\Lifecycle\DatabaseRecordsRegistrar;
@@ -155,6 +158,15 @@ final class ModulesServiceProvider extends ServiceProvider
             );
         });
 
+        $this->app->singleton(RegistryIntrospection::class, function (Application $app): ReadRegistryIntrospection {
+            return new ReadRegistryIntrospection(
+                registry: $app->make(ModuleRegistry::class),
+                activationGate: $app->make(ModuleActivationGate::class),
+                cachePath: CompiledModuleRegistry::defaultCachePath(),
+                failIfMissing: $app->environment('production'),
+            );
+        });
+
         // Rebind the boxed Null default (CoreServiceProvider::register(),
         // registered before this provider) to the real manifest-backed
         // implementation — corex/modules is present, so
@@ -173,7 +185,7 @@ final class ModulesServiceProvider extends ServiceProvider
         // pg-lane test/deploy path runs these migrations explicitly,
         // scoped by --path (see tests/Feature/ModuleLifecycleTest.php).
         if ($this->app->runningInConsole()) {
-            $this->commands([CompileModulesCommand::class]);
+            $this->commands([CompileModulesCommand::class, WhyCommand::class]);
 
             // Reconcile a module's ownership registry with the real schema and
             // provide the single legal exit from the terminal `purged` state

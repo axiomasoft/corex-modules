@@ -46,6 +46,29 @@ corex/core). Все `timestamptz` — с явной микросекундной
 (`precision: 6`). Порядок purge в `mod_records` детерминирован монотонным
 `seq bigserial` (не часами) — FK-безопасный обратный порядок удаления.
 
+## Tool declarations (P8)
+
+Modules may expose headless tools through the existing `Api` extender: `Api::tool()` for
+standalone handlers and `Api::exposeTool()` to project an already-declared operation. Tool
+declarations compile into the same API slice as HTTP operations; they do not create routes or
+implicit CRUD. Canonical tuple, wire name, contract hash and schema validation are enforced at
+compile time; runtime catalogue and guarded invocation live in optional `corex/api`.
+
+## Registry introspection
+
+`RegistryIntrospection` exposes a read-only map of the eight compiled extenders, entity/field
+ownership and capability traits, plus a bounded `why()` explanation for module activation.
+Diagnostics redact handler classes, connection topology and other confidential internals.
+The local operator CLI is:
+
+```bash
+php artisan corex:modules:why example/demo
+php artisan corex:modules:why example/demo --account=<trusted-account-id> --json
+```
+
+Without `--account`, output is declaration-only and does not claim a tenant activation verdict.
+Tested installed compatibility passports remain a consumer/P9 obligation.
+
 ## Compatibility evidence
 
 The factual compatibility passport, its local proof class, and explicit limits
