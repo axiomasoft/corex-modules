@@ -1,0 +1,44 @@
+{
+  "authors": [
+    {
+      "email": "dv.vostrikov@gmail.com",
+      "name": "Dmitry Vostrikov"
+    }
+  ],
+  "autoload": {
+    "psr-4": {
+      "CoreX\\Modules\\": "src/"
+    }
+  },
+  "description": "CoreX module system — EntityRegistry, module manifests, discovery and the compiled registry hot-path.",
+  "extra": {
+    "laravel": {
+      "providers": [
+        "CoreX\\Modules\\ModulesServiceProvider"
+      ]
+    }
+  },
+  "keywords": [
+    "laravel",
+    "modules",
+    "entity-registry"
+  ],
+  "license": "MIT",
+  "minimum-stability": "dev",
+  "name": "corex/modules",
+  "prefer-stable": true,
+  "require": {
+    "corex/core": "0.1.0-p4.3",
+    "illuminate/contracts": "^12.0|^13.0",
+    "illuminate/database": "^12.0|^13.0",
+    "illuminate/support": "^12.0|^13.0",
+    "php": "^8.3"
+  },
+  "require-dev": {
+    "larastan/larastan": "^3.0",
+    "orchestra/testbench": "^10.0|^11.0",
+    "phpstan/phpstan": "^2.0"
+  },
+  "type": "library",
+  "version": "0.1.0-p4.3"
+}
